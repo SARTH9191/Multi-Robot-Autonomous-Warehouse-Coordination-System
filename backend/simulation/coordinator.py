@@ -153,8 +153,14 @@ class Coordinator:
             target_pos = shelf_info["pickup_cell"]
             target_id = next_shelf_id
         elif robot.cargo:
-            # Deliver to packing station
-            target_pos = self.warehouse.packing_stations["PACK_1"] if robot_id in ["R1", "R3"] else self.warehouse.packing_stations["PACK_2"]
+            # Deliver to dedicated packing station bay to prevent bottleneck blocking
+            packing_bays = {
+                "R1": (14, 20),
+                "R3": (15, 20),
+                "R4": (16, 20),
+                "R2": (17, 20)
+            }
+            target_pos = packing_bays.get(robot_id, self.warehouse.packing_stations["PACK_1"])
             target_id = "PACKING_STATION"
         else:
             robot.status = RobotStatus.COMPLETED
@@ -166,7 +172,7 @@ class Coordinator:
         # Dynamic obstacles: other robots' current positions to avoid parking inside them
         dyn_obstacles = set()
         for other_id, other_r in self.robots.items():
-            if other_id != robot_id and other_r.status in [RobotStatus.WAITING, RobotStatus.PICKING, RobotStatus.DELIVERING]:
+            if other_id != robot_id and other_r.status in [RobotStatus.WAITING, RobotStatus.PICKING, RobotStatus.DELIVERING, RobotStatus.COMPLETED]:
                 dyn_obstacles.add(other_r.get_pos())
                 
         # If replanning, optionally reserve currently passing robots' immediate next steps
@@ -341,24 +347,25 @@ class Coordinator:
                 )
                 
                 loser_robot = self.robots[loser]
-                if action == SchedulerAction.HOLD_WAIT:
-                    loser_robot.status = RobotStatus.WAITING
-                    loser_robot.waiting_ticks += 1
-                    self.logger.log(
-                        f"⏸ {loser} holding / waiting for corridor clearance",
-                        level=EventLevel.INFO,
-                        robot_id=loser,
-                        category="SCHEDULER"
-                    )
-                elif action == SchedulerAction.TRIGGER_REPLAN:
-                    loser_robot.status = RobotStatus.REPLANNING
-                    self.logger.log(
-                        f"↻ {loser} head-on conflict: initiating dynamic A* replan",
-                        level=EventLevel.WARNING,
-                        robot_id=loser,
-                        category="REPLAN"
-                    )
-                    self.plan_next_leg_for_robot(loser, is_replan=True)
+                if loser_robot.status not in [RobotStatus.PICKING, RobotStatus.DELIVERING, RobotStatus.COMPLETED]:
+                    if action == SchedulerAction.HOLD_WAIT:
+                        loser_robot.status = RobotStatus.WAITING
+                        loser_robot.waiting_ticks += 1
+                        self.logger.log(
+                            f"⏸ {loser} holding / waiting for corridor clearance",
+                            level=EventLevel.INFO,
+                            robot_id=loser,
+                            category="SCHEDULER"
+                        )
+                    elif action == SchedulerAction.TRIGGER_REPLAN:
+                        loser_robot.status = RobotStatus.REPLANNING
+                        self.logger.log(
+                            f"↻ {loser} head-on conflict: initiating dynamic A* replan",
+                            level=EventLevel.WARNING,
+                            robot_id=loser,
+                            category="REPLAN"
+                        )
+                        self.plan_next_leg_for_robot(loser, is_replan=True)
 
         # 5. Check Deadlock Prevention via DFS Cycle Detection (Section 15)
         deadlock_res = self.scheduler.check_and_resolve_deadlocks({
